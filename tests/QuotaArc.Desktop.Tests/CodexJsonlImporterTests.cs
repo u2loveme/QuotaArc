@@ -173,6 +173,125 @@ public sealed class CodexJsonlImporterTests
         }
     }
 
+    [Fact]
+    public void QuotaAlertThresholdsCollapseAndPersistAcrossCyclesAndRestarts()
+    {
+        Assert.Equal((1, 25d), RunThresholds("5-hour", (30, null, 0), (24, null, 1)));
+        Assert.Equal((1, 15d), RunThresholds("weekly", (30, null, 0), (14, null, 1)));
+        Assert.Equal((1, 10d), RunThresholds("weekly", (31, null, 0), (9, null, 1)));
+        Assert.Equal((1, 5d), RunThresholds("weekly", (30, null, 0), (4, null, 1)));
+        Assert.Equal((1, 0d), RunThresholds("weekly", (30, null, 0), (0, null, 1)));
+        Assert.Equal((1, 0d), RunThresholds("weekly", (4, null, 0), (0, null, 1)));
+
+        // A terminal state and every intermediate threshold are consumed once.
+        Assert.Equal((1, 0d), RunThresholds("weekly", (30, null, 0), (0, null, 1), (0, null, 2)));
+        Assert.Equal((1, 10d), RunThresholds("weekly", (31, null, 0), (9, null, 1), (12, null, 2), (9, null, 3)));
+
+        // A refill without a new reset identity does not re-arm the same cycle.
+        Assert.Equal((1, 25d), RunThresholds("weekly", (100, "2026-09-24T00:00:00Z", 0),
+            (24, "2026-09-24T00:00:00Z", 1), (100, "2026-09-24T00:00:00Z", 2),
+            (24, "2026-09-24T00:00:00Z", 3)));
+
+        // A new reset identity starts a fresh cycle after a persisted restart.
+        Assert.Equal((2, 25d), RunThresholds("weekly", (100, "2026-09-24T00:00:00Z", 0),
+            (24, "2026-09-24T00:00:00Z", 1), (100, "2026-09-25T00:00:00Z", 2),
+            (24, "2026-09-25T00:00:00Z", 3)));
+
+        // An older live sample cannot replay an alert after a newer sample.
+        Assert.Equal((0, 0d), RunThresholds("weekly", (30, null, 10), (24, null, 5)));
+    }
+
+    [Fact]
+    public void QuotaAlertStateConsumesEveryIntermediateThresholdForTheCycle()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"quotaarc-alert-state-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var database = Path.Combine(directory, "telemetry.sqlite3");
+        CreateSchema(database);
+        try
+        {
+            using (var connection = OpenReadWrite(database))
+            using (var transaction = connection.BeginTransaction())
+            {
+                QuotaAlertStore.StoreQuota(connection, transaction,
+                    new LiveQuotaSample("weekly", "codex", 69, 10080, null,
+                        DateTimeOffset.Parse("2026-09-24T12:00:00Z")),
+                    "APP_SERVER_LIVE", notify: true);
+                transaction.Commit();
+            }
+
+            using (var connection = OpenReadWrite(database))
+            using (var transaction = connection.BeginTransaction())
+            {
+                QuotaAlertStore.StoreQuota(connection, transaction,
+                    new LiveQuotaSample("weekly", "codex", 91, 10080, null,
+                        DateTimeOffset.Parse("2026-09-24T12:01:00Z")),
+                    "APP_SERVER_LIVE", notify: true);
+                transaction.Commit();
+            }
+
+            using var readOnly = Open(database);
+            using var command = readOnly.CreateCommand();
+            command.CommandText = "SELECT value FROM app_settings WHERE key='quota_state.weekly';";
+            using var document = JsonDocument.Parse((string)command.ExecuteScalar()!);
+            var fired = document.RootElement.GetProperty("fired")
+                .EnumerateArray().Select(item => item.GetDouble()).ToArray();
+            Assert.Equal(new[] { 25d, 15d, 10d }, fired.OrderByDescending(value => value));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("weekly: 0% remaining", "weekly-quota")]
+    [InlineData("5-hour: 25% remaining", "5-hour-quota")]
+    [InlineData("reserve: 5% remaining", "reserve-quota")]
+    [InlineData("Windows notification delivery is enabled.", "quota-alert")]
+    public void WindowsNotificationTagsRemainStablePerQuotaSource(string message, string expectedTag) =>
+        Assert.Equal(expectedTag, WindowsAppNotificationService.GetNotificationTag(message));
+
+    private static (int Count, double Threshold) RunThresholds(
+        string kind,
+        params (int Remaining, string? ResetAt, int Minutes)[] values)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"quotaarc-alert-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var database = Path.Combine(directory, "telemetry.sqlite3");
+        CreateSchema(database);
+        try
+        {
+            foreach (var (remaining, resetAt, minutes) in values)
+            {
+                using var connection = OpenReadWrite(database);
+                using var transaction = connection.BeginTransaction();
+                QuotaAlertStore.StoreQuota(connection, transaction,
+                    new LiveQuotaSample(
+                        kind, "codex", 100 - remaining, kind == "weekly" ? 10080 : 300,
+                        resetAt is null ? null : DateTimeOffset.Parse(resetAt),
+                        DateTimeOffset.Parse($"2026-09-24T12:{minutes:00}:00Z")),
+                    "APP_SERVER_LIVE", notify: true);
+                transaction.Commit();
+            }
+
+            using var readOnly = Open(database);
+            using var command = readOnly.CreateCommand();
+            command.CommandText = """
+                SELECT threshold FROM alert_events
+                WHERE event_type='LOW_THRESHOLD' ORDER BY id;
+                """;
+            using var reader = command.ExecuteReader();
+            var thresholds = new List<double>();
+            while (reader.Read()) thresholds.Add(reader.GetDouble(0));
+            return (thresholds.Count, thresholds.Count == 0 ? 0 : thresholds[^1]);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static SqliteConnection Open(string path)
     {
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder

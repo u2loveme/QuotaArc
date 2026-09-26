@@ -48,7 +48,9 @@ internal static class QuotaAlertStore
         var epoch = sample.ResetAt is not null
             ? CodexJsonlImporter.ToPythonIso(sample.ResetAt.Value)
             : ReadString(state, "epoch");
-        var resetEpoch = ReadString(state, "reset_at");
+        var resetEpoch = ReadString(state, "cycle")
+            ?? ReadString(state, "reset_at")
+            ?? ReadString(state, "epoch");
         var lastSample = ReadTimestamp(state, "last_sample");
         var initialized = ReadBool(state, "initialized");
         var fired = ReadFired(state);
@@ -67,16 +69,8 @@ internal static class QuotaAlertStore
             && lastSample is { } previousSample
             && boundary > previousSample
             && boundary <= sample.SampledAt;
-        var resetEpochChanged = epoch is not null
-            && resetEpoch is not null
-            && epoch != resetEpoch;
-        var confirmedEpochRefill = resetEpochChanged
-            && old is not null
-            && remaining - old.Value >= 10
-            && remaining >= 75;
-        var reset = crossedExpectedReset || confirmedEpochRefill || (old is not null
-            && remaining - old.Value >= 50
-            && remaining >= 90);
+        var resetEpochChanged = IsNewCycle(epoch, resetEpoch, lastSample, sample.SampledAt);
+        var reset = crossedExpectedReset || resetEpochChanged;
 
         if (reset)
         {
@@ -93,18 +87,38 @@ internal static class QuotaAlertStore
                 $"{sample.Kind} quota recovering", sample.SampledAt);
         }
 
-        if (!alertsPaused)
+        if (!alertsPaused && old is not null)
         {
-            foreach (var threshold in thresholds)
-            {
-                if (old is not null && old.Value >= threshold && threshold > remaining
+            var crossed = thresholds
+                .Where(threshold => old.Value >= threshold
+                    && threshold > remaining
                     && !fired.Contains(threshold))
-                {
-                    fired.Add(threshold);
-                    Record(connection, transaction, sample.Kind, "LOW_THRESHOLD", old, remaining,
-                        threshold, $"{sample.Kind}: {remaining:0}% remaining (crossed {threshold:0}%)",
-                        sample.SampledAt);
-                }
+                .ToArray();
+            foreach (var threshold in crossed)
+            {
+                fired.Add(threshold);
+            }
+
+            var terminal = remaining <= 0 && old.Value > 0 && !fired.Contains(0);
+            if (terminal)
+            {
+                fired.Add(0);
+            }
+
+            // Thresholds are severity levels. A single sample may cross many
+            // levels, but it produces one user-visible event for the most
+            // severe state reached by that sample.
+            if (terminal)
+            {
+                Record(connection, transaction, sample.Kind, "LOW_THRESHOLD", old, remaining,
+                    0, $"{sample.Kind}: 0% remaining", sample.SampledAt);
+            }
+            else if (crossed.Length > 0)
+            {
+                var mostSevere = crossed.Min();
+                Record(connection, transaction, sample.Kind, "LOW_THRESHOLD", old, remaining,
+                    mostSevere, $"{sample.Kind}: {remaining:0}% remaining (crossed {mostSevere:0}%)",
+                    sample.SampledAt);
             }
         }
 
@@ -179,12 +193,36 @@ internal static class QuotaAlertStore
             initialized = state.Initialized,
             remaining = state.Remaining,
             reset_at = state.ResetAt,
+            cycle = state.ResetAt,
             epoch = state.Epoch,
             fired = state.Fired,
             last_sample = CodexJsonlImporter.ToPythonIso(state.LastSample),
             stale = state.Stale
         });
         WriteSetting(connection, transaction, key, json);
+    }
+
+    private static bool IsNewCycle(
+        string? currentCycle,
+        string? storedCycle,
+        DateTimeOffset? lastSample,
+        DateTimeOffset sampleAt)
+    {
+        if (string.IsNullOrWhiteSpace(currentCycle)
+            || string.IsNullOrWhiteSpace(storedCycle)
+            || string.Equals(currentCycle, storedCycle, StringComparison.Ordinal)
+            || (lastSample is { } previous && sampleAt < previous))
+        {
+            return false;
+        }
+
+        if (TryParseTimestamp(currentCycle, out var current)
+            && TryParseTimestamp(storedCycle, out var stored))
+        {
+            return current > stored;
+        }
+
+        return true;
     }
 
     private static void Record(SqliteConnection connection, SqliteTransaction transaction, string kind,

@@ -94,6 +94,8 @@ public sealed class WindowsAppNotificationService : IDisposable
                 .AddArgument(argumentName, argumentValue)
                 .AddText("QuotaArc")
                 .AddText(message)
+                .SetGroup("quota-alerts")
+                .SetTag(argumentValue == "" ? "quota-alert" : GetNotificationTag(message))
                 .BuildNotification();
             notification.SuppressDisplay = suppressDisplay;
             _manager.Show(notification);
@@ -108,6 +110,19 @@ public sealed class WindowsAppNotificationService : IDisposable
             Status = "Windows could not display notifications";
             return false;
         }
+    }
+
+    internal static string GetNotificationTag(string message)
+    {
+        var separator = message.IndexOf(':', StringComparison.Ordinal);
+        var kind = separator > 0 ? message[..separator] : "quota";
+        return kind switch
+        {
+            "5-hour" => "5-hour-quota",
+            "weekly" => "weekly-quota",
+            "reserve" => "reserve-quota",
+            _ => "quota-alert"
+        };
     }
 
     public void Dispose()
