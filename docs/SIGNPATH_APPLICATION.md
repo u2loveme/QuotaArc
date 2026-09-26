@@ -9,7 +9,7 @@ Status: preparation only. No SignPath application has been submitted.
 - Website and download page: https://vivibureau.pp.ua/quotaarc
 - License: Mozilla Public License 2.0
 - Release page: https://github.com/u2loveme/QuotaArc/releases/tag/v0.9.0
-  (expected URL; it is not live until publication).
+  (published prerelease: QuotaArc 0.9.0 Public Beta).
 - Purpose: local Windows dashboard for Codex quota status and locally observed
   token usage.
 - Build: Windows x64, .NET 10 SDK, `dotnet publish` with the project command
@@ -21,7 +21,7 @@ Status: preparation only. No SignPath application has been submitted.
 
 ## Before applying
 
-- Confirm the public repository and release are live and maintained.
+- Continue maintaining the public repository and release.
 - Enable MFA and configure team roles for the SignPath account.
 - Publish a code-signing policy on the project website/download page.
 - Confirm with SignPath that the bundled Windows App SDK and WebView2
