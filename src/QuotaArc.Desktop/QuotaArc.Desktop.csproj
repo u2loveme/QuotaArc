@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>QuotaArc</AssemblyName>
+    <RootNamespace>QuotaArc.Desktop</RootNamespace>
+    <AssemblyTitle>QuotaArc</AssemblyTitle>
+    <Product>QuotaArc</Product>
+    <Description>QuotaArc local quota and usage dashboard</Description>
+    <Version>0.9.0</Version>
+    <AssemblyVersion>0.9.0.0</AssemblyVersion>
+    <FileVersion>0.9.0.0</FileVersion>
+    <InformationalVersion>0.9.0</InformationalVersion>
+    <ApplicationIcon>Assets/QuotaArc.ico</ApplicationIcon>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSdkSelfContained>true</WindowsAppSdkSelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/QuotaArc.ico" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260804001" />
+    <InternalsVisibleTo Include="QuotaArc.Desktop.Tests" />
+  </ItemGroup>
+  <Target Name="SyncQuotaArcIcon" BeforeTargets="PrepareForBuild">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/../../assets/QuotaArc.ico"
+          DestinationFiles="$(MSBuildProjectDirectory)/Assets/QuotaArc.ico"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>
